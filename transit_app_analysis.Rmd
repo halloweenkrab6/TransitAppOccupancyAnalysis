@@ -1,0 +1,214 @@
+---
+title: "Transit App Usage and Bus Occupancy: Comparing Off-Campus (A) and On-Campus (B) Routes"
+author: "Matthew Morris"
+date: "9/30/2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5)
+
+# One-time installs (run in the Console, not when knitting):
+# install.packages(c("tidyverse", "car", "lme4", "lmerTest", "knitr"))
+
+library(tidyverse)
+library(car)        # leveneTest
+library(lme4)
+library(lmerTest)   # p-values for mixed models
+library(knitr)
+```
+
+# 1. Introduction
+
+Buses track how many Transit App users are aboard at any moment. Observers (from a team of student volunteers, and myself) also record how full the bus actually is. This report asks three questions:
+
+1. Is there a statistically significant relationship between the number of reported Transit App users and the actual occupancy of a bus?
+2. Do **Group A** routes (25, 26; Junior/Senior, off-campus) differ from **Group B** routes (30, 31, 33; on-campus, residence halls and classes; Freshmen/Sophomores)?
+3. **Hypothesis:** Group A buses will have fewer Transit App users per person actually on the bus (i.e., lower Transit App usage among their riders).
+
+# 2. Data and methods
+
+## 2.1 Data collection
+
+The number of Transit App users aboard is tracked by the bus before the observer boards. Seats taken is the observer's headcount of people aboard, minus people waiting for the bus with the observer, expressed as a fraction of that bus type's capacity (1 = full).
+
+```{r data}
+buses <- read_csv(
+"route,group,transit_app_users,seats
+26,A,2,0.4
+26,A,3,0.5
+26,A,7,1
+26,A,2,0.3
+26,A,2,0.45
+25,A,3,0.5
+25,A,5,0.71
+25,A,2,0.43
+26,A,3,0.45
+26,A,7,1
+26,A,2,0.31
+26,A,2,0.45
+25,A,3,0.5
+25,A,4,0.66
+30,B,5,0.44
+30,B,4,0.35
+30,B,4,0.33
+30,B,6,0.64
+30,B,2,0.46
+30,B,1,0.14
+31,B,9,0.53
+31,B,11,0.61
+31,B,7,0.55
+31,B,2,0.2
+31,B,3,0.23
+31,B,4,0.34
+31,B,6,0.52
+31,B,2,0.39
+33,B,4,0.43
+33,B,6,0.54
+33,B,7,0.66
+33,B,6,0.81
+33,B,9,1
+33,B,5,0.44
+33,B,4,0.31") %>%
+  mutate(route = factor(route),
+         group = factor(group),
+         # Transit App users per unit of occupancy (higher = more Transit App users per full bus)
+         users_per_fullness = transit_app_users / seats)
+
+buses %>%
+  group_by(group) %>%
+  summarise(trips = n(),
+            routes = n_distinct(route),
+            mean_transit_app_users = mean(transit_app_users),
+            sd_transit_app_users = sd(transit_app_users),
+            mean_seats = mean(seats),
+            sd_seats = sd(seats),
+            mean_users_per_fullness = mean(users_per_fullness)) %>%
+  kable(digits = 2, caption = "Summary by group")
+```
+
+## 2.2 Statistical methods
+
+- **Question 1:** Pearson and Spearman correlation, and simple linear regression of seats taken on Transit App users.
+- **Question 2:** Welch's t-test and the Wilcoxon rank-sum test comparing groups on each measure. Non-parametric tests are included because some distributions depart from normality.
+- **Question 3:** A one-sided test that A has a lower ratio of Transit App users to occupancy than B, plus a regression with a group × Transit App users interaction to test whether the relationship differs by group.
+- **Repeated trips:** Several trips come from the same route, so observations are not independent. A mixed model with a random intercept for route is used as a robustness check.
+
+All analyses were done in R (`r R.version.string`).
+
+# 3. Results
+
+## 3.1 Transit App users and actual occupancy
+
+```{r q1-tests}
+cor.test(~ transit_app_users + seats, data = buses)                       # Pearson
+cor.test(~ transit_app_users + seats, data = buses,
+         method = "spearman", exact = FALSE)                      # Spearman
+
+m1 <- lm(seats ~ transit_app_users, data = buses)
+summary(m1)
+confint(m1)
+```
+
+```{r q1-plot}
+ggplot(buses, aes(transit_app_users, seats, colour = group)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(x = "Transit App users reported", y = "Seats taken (1 = full)",
+       colour = "Group",
+       title = "Reported Transit App users vs. actual occupancy") +
+  theme_minimal()
+```
+
+**Interpretation.** There is a significant positive relationship (Pearson r = 0.68, p < 0.001; Spearman rho = 0.72, p < 0.001). Each additional Transit App user corresponds to roughly 0.06 more of the bus filled (R-squared about 0.46, so reported Transit App users explain less than half of the variation in occupancy). The relationship also holds within each group separately.
+
+```{r q1-diagnostics, fig.height=6}
+par(mfrow = c(2, 2)); plot(m1); par(mfrow = c(1, 1))
+```
+
+## 3.2 Group A vs. Group B
+
+```{r q2-assumptions}
+shapiro.test(buses$transit_app_users[buses$group == "A"])
+shapiro.test(buses$transit_app_users[buses$group == "B"])
+leveneTest(seats ~ group, data = buses)
+```
+
+```{r q2-tests}
+cat("--- Seats taken ---\n")
+t.test(seats ~ group, data = buses)
+wilcox.test(seats ~ group, data = buses, exact = FALSE)
+
+cat("\n--- Transit App users ---\n")
+t.test(transit_app_users ~ group, data = buses)
+wilcox.test(transit_app_users ~ group, data = buses, exact = FALSE)
+```
+
+```{r q2-plot}
+plot_data <- buses %>%
+  pivot_longer(c(transit_app_users, seats), names_to = "measure", values_to = "value") %>%
+  mutate(measure = dplyr::recode(measure,
+                                 transit_app_users = "Transit App users",
+                                 seats = "Seats taken"))
+
+ggplot(data = plot_data, mapping = aes(x = group, y = value, fill = group)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, size = 1.5) +
+  facet_wrap(~ measure, scales = "free_y") +
+  labs(x = "Group", y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Interpretation.** Seat occupancy does **not** differ significantly between groups (A mean 0.55 vs. B mean 0.47; Welch p = 0.32; Wilcoxon p = 0.44). Reported Transit App users **do** differ: B buses carry more Transit App users (A mean 3.4 vs. B mean 5.1; Welch p = 0.024; Wilcoxon p = 0.037). Buses in both groups are about equally full, but B buses have more Transit App users aboard.
+
+## 3.3 Hypothesis: A has fewer Transit App users per person on the bus
+
+```{r q3-tests}
+buses %>%
+  group_by(group) %>%
+  summarise(mean = mean(users_per_fullness),
+            median = median(users_per_fullness)) %>%
+  kable(digits = 2, caption = "Transit App users per unit of occupancy")
+
+t.test(users_per_fullness ~ group, data = buses, alternative = "less")        # A < B
+wilcox.test(users_per_fullness ~ group, data = buses,
+            alternative = "less", exact = FALSE)
+```
+
+```{r q3-interaction}
+m2 <- lm(seats ~ transit_app_users * group, data = buses)
+anova(m2)
+summary(m2)
+```
+
+```{r q3-plot}
+ggplot(buses, aes(group, users_per_fullness, fill = group)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.1, size = 1.8) +
+  labs(x = "Group", y = "Transit App users per unit of occupancy",
+       title = "Transit App users per full bus, by group") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+Group A has fewer Transit App users per unit of occupancy (about 6.0 vs. 10.8; one-sided Welch p < 0.001; one-sided Wilcoxon p < 0.001), which supports the hypothesis. The group × Transit App users interaction is also significant (p = 0.004): in A, each reported Transit App user corresponds to about 0.12 of a bus filled, versus about 0.06 in B. In other words, Transit App users make up a smaller share of riders on A routes.
+
+# 4. Summary and Conclusions
+
+The number of reported Transit App users is significantly associated with actual occupancy (r = 0.68, p < 0.001), but is an overall poor predictor (R² = 0.46). 
+
+The relationship is tight on A routes (R² = 0.95) and considerably noisier on B routes (R² = 0.57). This means that the share of riders using the Transit App is much more consistent from trip to trip on A routes. One possible explanation is that A routes serve a steadier population, mostly Juniors and Seniors commuting to campus, whereas B routes may draw a more variable mix of riders because of campus events and overlapping routes. 
+
+Overall occupancy does not differ majorly between off-campus (A) and on-campus (B) routes, but Transit App users are a significantly smaller share of riders on A routes. This is consistent with the hypothesis that Junior/Senior riders on off-campus routes use the Transit App less than the mixed population of on-campus route riders.
+
+Limitations exist due to the usage of the 25 and 26 routes in the A-group; While routes 31, 30, and 33 cover most major points of student traffic on-campus, most off-campus volunteers lived north of campus, and findings on other off-campus routes may add additional insight.
+
+```{r session, include=FALSE}
+sessionInfo()   
+```
